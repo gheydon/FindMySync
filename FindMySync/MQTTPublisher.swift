@@ -70,9 +70,17 @@ class MQTTPublisher {
 
     // MARK: - Publishing
 
+    /// Levels at or above this are what Apple itself warns about. Find My shows a
+    /// low-battery icon for a beacon reporting 5 and nothing for 1, 2 or 4, which
+    /// is the only calibration the system exposes - there is no four-bar gauge for
+    /// accessories anywhere in the UI. The raw level is published alongside so the
+    /// threshold can be revisited without guesswork.
+    private static let batteryLowLevel = 5
+
     func publish(
         id: String, name: String, latitude: NSNumber, longitude: NSNumber,
-        accuracy: NSNumber, battery: NSNumber, address: String
+        accuracy: NSNumber, battery: NSNumber, batteryLevel: NSNumber = -1,
+        address: String
     ) {
         let settings = Settings.current()
 
@@ -86,17 +94,20 @@ class MQTTPublisher {
 
             let object = MQTTPublisher.objectId(for: id)
             let hasBattery = battery.floatValue > 0
+            let hasLevel = batteryLevel.intValue > 0
 
-            // Republish discovery when the battery component appears, so an item that
-            // only reports its level occasionally still gets the sensor.
-            let announceKey = hasBattery ? object + "+battery" : object
+            // Republish discovery when a battery component appears, so an item that
+            // only reports occasionally still ends up with the sensor.
+            var announceKey = object
+            if hasBattery { announceKey += "+battery" }
+            if hasLevel { announceKey += "+level" }
             if !self.announced.contains(announceKey) {
                 self.announced.insert(announceKey)
                 self.enqueue(
                     topic: "\(settings.discoveryPrefix)/device/\(object)/config",
                     payload: self.discoveryPayload(
                         object: object, name: name, hasBattery: hasBattery,
-                        settings: settings)
+                        hasLevel: hasLevel, settings: settings)
                 )
             }
 
@@ -108,6 +119,14 @@ class MQTTPublisher {
 
             if hasBattery {
                 state["battery_level"] = Int((battery.floatValue * 100).rounded())
+            }
+
+            if hasLevel {
+                state["battery_low"] =
+                    batteryLevel.intValue >= MQTTPublisher.batteryLowLevel
+                // Published raw so the threshold above can be checked against
+                // reality, and so anyone wanting the finer states can template on it.
+                state["battery_state"] = batteryLevel.intValue
             }
 
             if !address.isEmpty {
@@ -226,7 +245,8 @@ class MQTTPublisher {
     }
 
     private func discoveryPayload(
-        object: String, name: String, hasBattery: Bool, settings: Settings
+        object: String, name: String, hasBattery: Bool, hasLevel: Bool,
+        settings: Settings
     ) -> String {
         let stateTopic = MQTTPublisher.stateTopic(object, settings)
 
@@ -251,6 +271,21 @@ class MQTTPublisher {
                 "state_class": "measurement",
                 "state_topic": stateTopic,
                 "value_template": "{{ value_json.battery_level }}",
+            ]
+        }
+
+        // Accessories report a coarse level rather than a percentage, so this is a
+        // binary_sensor - the same low / not-low that Find My itself shows - instead
+        // of a gauge built on invented numbers.
+        if hasLevel {
+            components["battery_low"] = [
+                "p": "binary_sensor",
+                "name": "Battery low",
+                "unique_id": object + "_battery_low",
+                "device_class": "battery",
+                "entity_category": "diagnostic",
+                "state_topic": stateTopic,
+                "value_template": "{{ 'ON' if value_json.battery_low else 'OFF' }}",
             ]
         }
 
