@@ -275,6 +275,8 @@ class Synchronizer {
                         }
                     }
                     
+                    var beaconBatteryLevels: [String: NSNumber] = [:]
+
                     if fileManager.fileExists(atPath: sharedBeaconsUrl.path) {
                         log("Scanning shared beacons...")
                         let sharedRecords = try fileManager.contentsOfDirectory(
@@ -291,6 +293,18 @@ class Synchronizer {
                                     {
                                         sharedBeaconMap[identifier] = ownerBeaconIdentifier
                                     }
+                                }
+
+                                // Only accessories report a usable level. Apple's own
+                                // devices carry vendorId -1 and always report 0, which
+                                // means "no reading" rather than "flat".
+                                if let identifier = decryptedData["identifier"] as? String,
+                                    let vendorId = decryptedData["vendorId"] as? NSNumber,
+                                    vendorId.intValue != -1,
+                                    let level = decryptedData["batteryLevel"] as? NSNumber,
+                                    level.intValue > 0
+                                {
+                                    beaconBatteryLevels[identifier] = level
                                 }
                             } else {
                                 log("Error: Cannot decrypt shared beacon record \(sharedRecord.lastPathComponent)")
@@ -342,6 +356,12 @@ class Synchronizer {
                                             if let name = beaconNames[id] {
                                                 beacon.name = name
                                             }
+
+                                            if let level = beaconBatteryLevels[id]
+                                                ?? beaconBatteryLevels[identifier]
+                                            {
+                                                beacon.batteryLevel = level
+                                            }
                                             
                                             if let existedBeacon = beacons[id] {
                                                 if let existedBeaconTimestamp = existedBeacon.timestamp
@@ -379,6 +399,7 @@ class Synchronizer {
                                 beacon.longitude,
                             accuracy: beacon.accuracy,
                             battery: -1,
+                            batteryLevel: beacon.batteryLevel,
                             address: ""
                         )
 
@@ -740,7 +761,8 @@ class Synchronizer {
 
     func updateEntity(
         id: String, name: String, latitude: NSNumber, longitude: NSNumber,
-        accuracy: NSNumber, battery: NSNumber, address: String
+        accuracy: NSNumber, battery: NSNumber, batteryLevel: NSNumber = -1,
+        address: String
     ) {
         let transport: String =
             UserDefaults.standard.string(forKey: "endpoint_transport") ?? "http"
@@ -749,7 +771,8 @@ class Synchronizer {
             MQTTPublisher.shared.log = log
             MQTTPublisher.shared.publish(
                 id: id, name: name, latitude: latitude, longitude: longitude,
-                accuracy: accuracy, battery: battery, address: address)
+                accuracy: accuracy, battery: battery, batteryLevel: batteryLevel,
+                address: address)
             return
         }
 
